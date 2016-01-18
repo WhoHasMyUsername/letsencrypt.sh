@@ -12,6 +12,14 @@ umask 077 # paranoid umask, we're creating private keys
 SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 BASEDIR="${SCRIPTDIR}"
 
+# Constants to use in logging
+EROR=1
+WARN=2
+INFO=3
+DBUG=4
+
+LOGLEVEL=3
+
 # Check for script dependencies
 check_dependencies() {
   # just execute some dummy and/or version commands to see if required tools exist and are actually usable
@@ -63,7 +71,7 @@ load_config() {
     echo "# !! WARNING !! No config file found, using default config!" >&2
     echo "#" >&2
   elif [[ -e "${CONFIG}" ]]; then
-    echo "# INFO: Using config file ${CONFIG}"
+    _msg $INFO "Using config file ${CONFIG}"
     BASEDIR="$(dirname "${CONFIG}")"
     # shellcheck disable=SC1090
     . "${CONFIG}"
@@ -115,12 +123,12 @@ init_system() {
   register_new_key="no"
   if [[ -n "${PARAM_PRIVATE_KEY:-}" ]]; then
     # a private key was specified from the command line so use it for this run
-    echo "Using private key ${PARAM_PRIVATE_KEY} instead of account key"
+    _msg $INFO "Using private key ${PARAM_PRIVATE_KEY} instead of account key"
     PRIVATE_KEY="${PARAM_PRIVATE_KEY}"
   else
     # Check if private account key exists, if it doesn't exist yet generate a new one (rsa key)
     if [[ ! -e "${PRIVATE_KEY}" ]]; then
-      echo "+ Generating account key..."
+      _msg $INFO "+ Generating account key..."
       _openssl genrsa -out "${PRIVATE_KEY}" "${KEYSIZE}"
       register_new_key="yes"
     fi
@@ -135,7 +143,7 @@ init_system() {
 
   # If we generated a new private key in the step above we have to register it with the acme-server
   if [[ "${register_new_key}" = "yes" ]]; then
-    echo "+ Registering account key with letsencrypt..."
+    _msg $INFO "+ Registering account key with letsencrypt..."
     [[ ! -z "${CA_NEW_REG}" ]] || _exiterr "Certificate authority doesn't allow registrations."
     # If an email for the contact has been provided then adding it to the registration request
     if [[ -n "${CONTACT_EMAIL}" ]]; then
@@ -148,6 +156,22 @@ init_system() {
   if [[ "${CHALLENGETYPE}" = "http-01" && ! -d "${WELLKNOWN}" ]]; then
       _exiterr "WELLKNOWN directory doesn't exist, please create ${WELLKNOWN} and set appropriate permissions."
   fi
+}
+
+# Control what is output (and where, later), call with $(level) and $(message)
+# For instance: _msg $INFO "Here, have some information."
+_msg() {
+  # first argument should always be the loglevel
+  LEVEL=$1
+
+  shift 1
+
+  # if the level requested is greater than the logging level, do nothing
+  if [[ "${LEVEL}" -gt "${LOGLEVEL}" ]]; then
+    return 0
+  fi
+
+  echo $@
 }
 
 # Different sed version for different os types...
@@ -263,21 +287,21 @@ sign_domain() {
   altnames="${*}"
   timestamp="$(date +%s)"
 
-  echo " + Signing domains..."
+  _msg $INFO " + Signing domains..."
   if [[ -z "${CA_NEW_AUTHZ}" ]] || [[ -z "${CA_NEW_CERT}" ]]; then
     _exiterr "Certificate authority doesn't allow certificate signing"
   fi
 
   # If there is no existing certificate directory => make it
   if [[ ! -e "${BASEDIR}/certs/${domain}" ]]; then
-    echo " + Creating new directory ${BASEDIR}/certs/${domain} ..."
+    _msg $WARN " + Creating new directory ${BASEDIR}/certs/${domain} ..."
     mkdir -p "${BASEDIR}/certs/${domain}"
   fi
 
   privkey="privkey.pem"
   # generate a new private key if we need or want one
   if [[ ! -f "${BASEDIR}/certs/${domain}/privkey.pem" ]] || [[ "${PRIVATE_KEY_RENEW}" = "yes" ]]; then
-    echo " + Generating private key..."
+    _msg $WARN " + Generating private key..."
     privkey="privkey-${timestamp}.pem"
     case "${KEY_ALGO}" in
       rsa) _openssl genrsa -out "${BASEDIR}/certs/${domain}/privkey-${timestamp}.pem" "${KEYSIZE}";;
@@ -286,7 +310,7 @@ sign_domain() {
   fi
 
   # Generate signing request config and the actual signing request
-  echo " + Generating signing request..."
+  _msg $WARN " + Generating signing request..."
   SAN=""
   for altname in ${altnames}; do
     SAN+="DNS:${altname}, "
@@ -302,7 +326,7 @@ sign_domain() {
   # Request and respond to challenges
   for altname in ${altnames}; do
     # Ask the acme-server for new challenge token and extract them from the resulting json block
-    echo " + Requesting challenge for ${altname}..."
+    _msg $WARN " + Requesting challenge for ${altname}..."
     response="$(signed_request "${CA_NEW_AUTHZ}" '{"resource": "new-authz", "identifier": {"type": "dns", "value": "'"${altname}"'"}}')"
 
     challenges="$(printf '%s\n' "${response}" | grep -Eo '"challenges":[^\[]*\[[^]]*]')"
@@ -335,7 +359,7 @@ sign_domain() {
     [[ -n "${HOOK}" ]] && ${HOOK} "deploy_challenge" "${altname}" "${challenge_token}" "${keyauth_hook}"
 
     # Ask the acme-server to verify our challenge and wait until it is no longer pending
-    echo " + Responding to challenge for ${altname}..."
+    _msg $WARN " + Responding to challenge for ${altname}..."
     result="$(signed_request "${challenge_uri}" '{"resource": "challenge", "keyAuthorization": "'"${keyauth}"'"}')"
 
     status="$(printf '%s\n' "${result}" | get_json_string_value status)"
@@ -353,25 +377,25 @@ sign_domain() {
     fi
 
     if [[ "${status}" = "valid" ]]; then
-      echo " + Challenge is valid!"
+      _msg $WARN " + Challenge is valid!"
     else
       _exiterr "Challenge is invalid! (returned: ${status})"
     fi
   done
 
   # Finally request certificate from the acme-server and store it in cert-${timestamp}.pem and link from cert.pem
-  echo " + Requesting certificate..."
+  _msg $WARN " + Requesting certificate..."
   csr64="$(openssl req -in "${BASEDIR}/certs/${domain}/cert-${timestamp}.csr" -outform DER | urlbase64)"
   crt64="$(signed_request "${CA_NEW_CERT}" '{"resource": "new-cert", "csr": "'"${csr64}"'"}' | openssl base64 -e)"
   crt_path="${BASEDIR}/certs/${domain}/cert-${timestamp}.pem"
   printf -- '-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' "${crt64}" > "${crt_path}"
 
   # Try to load the certificate to detect corruption
-  echo " + Checking certificate..."
+  _msg $WARN " + Checking certificate..."
   _openssl x509 -text < "${crt_path}"
 
   # Create fullchain.pem
-  echo " + Creating fullchain.pem..."
+  _msg $WARN " + Creating fullchain.pem..."
   cat "${crt_path}" > "${BASEDIR}/certs/${domain}/fullchain-${timestamp}.pem"
   http_request get "$(openssl x509 -in "${BASEDIR}/certs/${domain}/cert-${timestamp}.pem" -noout -text | grep 'CA Issuers - URI:' | cut -d':' -f2-)" > "${BASEDIR}/certs/${domain}/chain-${timestamp}.pem"
   if ! grep -q "BEGIN CERTIFICATE" "${BASEDIR}/certs/${domain}/chain-${timestamp}.pem"; then
@@ -391,7 +415,7 @@ sign_domain() {
   [[ -n "${HOOK}" ]] && ${HOOK} "deploy_cert" "${domain}" "${BASEDIR}/certs/${domain}/privkey.pem" "${BASEDIR}/certs/${domain}/cert.pem" "${BASEDIR}/certs/${domain}/fullchain.pem"
 
   unset challenge_token
-  echo " + Done!"
+  _msg $WARN " + Done!"
 }
 
 # Usage: --cron (-c)
@@ -417,44 +441,46 @@ command_sign_domains() {
     force_renew="${PARAM_FORCE:-no}"
 
     if [[ -z "${morenames}" ]];then
-      echo "Processing ${domain}"
+      _msg $INFO "Processing ${domain}"
     else
-      echo "Processing ${domain} with alternative names: ${morenames}"
+      _msg $INFO "Processing ${domain} with alternative names: ${morenames}"
     fi
 
     if [[ -e "${cert}" ]]; then
-      printf " + Checking domain name(s) of existing cert..."
+      _msg $INFO " + Checking domain name(s) of existing cert..."
 
       certnames="$(openssl x509 -in "${cert}" -text -noout | grep DNS: | _sed 's/DNS://g' | tr -d ' ' | tr ',' '\n' | sort -u | tr '\n' ' ' | _sed 's/ $//')"
       givennames="$(echo "${domain}" "${morenames}"| tr ' ' '\n' | sort -u | tr '\n' ' ' | _sed 's/ $//' | _sed 's/^ //')"
 
       if [[ "${certnames}" = "${givennames}" ]]; then
-        echo " unchanged."
+        _msg $INFO "+ Unchanged."
       else
-        echo " changed!"
-        echo " + Domain name(s) are not matching!"
-        echo " + Names in old certificate: ${certnames}"
-        echo " + Configured names: ${givennames}"
-        echo " + Forcing renew."
+        _msg $WARN "${domain} Changed!"
+        _msg $WARN " + Domain name(s) are not matching!"
+        _msg $WARN " + Names in old certificate: ${certnames}"
+        _msg $WARN " + Configured names: ${givennames}"
+        _msg $WARN " + Forcing renew."
         force_renew="yes"
       fi
     fi
 
     if [[ -e "${cert}" ]]; then
-      echo " + Checking expire date of existing cert..."
+      _msg $INFO " + Checking expire date of existing cert..."
       valid="$(openssl x509 -enddate -noout -in "${cert}" | cut -d= -f2- )"
 
-      printf " + Valid till %s " "${valid}"
+      message=$(printf "+ Valid till %s " "${valid}")
+      _msg $INFO $message
+
       if openssl x509 -checkend $((RENEW_DAYS * 86400)) -noout -in "${cert}"; then
-        printf "(Longer than %d days). " "${RENEW_DAYS}"
+        _msg $INFO "+ (Longer than ${RENEW_DAYS} days.)"
         if [[ "${force_renew}" = "yes" ]]; then
-          echo "Ignoring because renew was forced!"
+          _msg $WARN "+ Ignoring because renew was forced!"
         else
-          echo "Skipping!"
+          _msg $INFO "+ Skipping!"
           continue
         fi
       else
-        echo "(Less than ${RENEW_DAYS} days). Renewing!"
+        _msg $WARN "(Less than ${RENEW_DAYS} days). Renewing!"
       fi
     fi
 
@@ -488,14 +514,14 @@ command_revoke() {
   fi
   [[ -f "${cert}" ]] || _exiterr "Could not find certificate ${cert}"
 
-  echo "Revoking ${cert}"
+  _msg $INFO "Revoking ${cert}"
 
   cert64="$(openssl x509 -in "${cert}" -inform PEM -outform DER | urlbase64)"
   response="$(signed_request "${CA_REVOKE_CERT}" '{"resource": "revoke-cert", "certificate": "'"${cert64}"'"}')"
   # if there is a problem with our revoke request _request (via signed_request) will report this and "exit 1" out
   # so if we are here, it is safe to assume the request was successful
-  echo " + Done."
-  echo " + Renaming certificate to ${cert}-revoked"
+  _msg $INFO " + Done."
+  _msg $INFO " + Renaming certificate to ${cert}-revoked"
   mv -f "${cert}" "${cert}-revoked"
 }
 
@@ -628,6 +654,10 @@ main() {
         shift 1
         check_parameters "${1:-}"
         PARAM_KEY_ALGO="${1}"
+        ;;
+
+      --quiet)
+        let "LOGLEVEL--"
         ;;
 
       *)
