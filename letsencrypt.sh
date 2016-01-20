@@ -656,7 +656,7 @@ main() {
         PARAM_KEY_ALGO="${1}"
         ;;
 
-      --quiet)
+      --quiet|-q)
         let "LOGLEVEL--"
         ;;
 
