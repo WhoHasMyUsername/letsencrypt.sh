@@ -656,6 +656,8 @@ main() {
         PARAM_KEY_ALGO="${1}"
         ;;
 
+      # PARAM_Usage: --quiet (-q)
+      # PARAM_Description: Decrease the number of messages to stdout
       --quiet|-q)
         let "LOGLEVEL--"
         ;;
