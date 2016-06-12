@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Fail early
 set -eu -o pipefail
@@ -17,9 +17,6 @@ _SUBTEST() {
   echo -n " + ${1} "
 }
 _PASS() {
-  if [[ ! -z "$(cat errorlog)" ]]; then
-    _FAIL
-  fi
   echo -e "[\u001B[32mPASS\u001B[0m]"
 }
 _FAIL() {
@@ -81,10 +78,12 @@ fi
 # Run ngrok and grab temporary url from logfile
 ngrok/ngrok http 8080 --log stdout --log-format logfmt --log-level debug > tmp.log &
 ngrok/ngrok http 8080 --log stdout --log-format logfmt --log-level debug > tmp2.log &
+ngrok/ngrok http 8080 --log stdout --log-format logfmt --log-level debug > tmp3.log &
 sleep 2
 TMP_URL="$(grep -Eo "Hostname:[a-z0-9]+.ngrok.io" tmp.log | head -1 | cut -d':' -f2)"
 TMP2_URL="$(grep -Eo "Hostname:[a-z0-9]+.ngrok.io" tmp2.log | head -1 | cut -d':' -f2)"
-if [[ -z "${TMP_URL}" ]] || [[ -z "${TMP2_URL}" ]]; then
+TMP3_URL="$(grep -Eo "Hostname:[a-z0-9]+.ngrok.io" tmp3.log | head -1 | cut -d':' -f2)"
+if [[ -z "${TMP_URL}" ]] || [[ -z "${TMP2_URL}" ]] || [[ -z "${TMP3_URL}" ]]; then
   echo "Couldn't get an url from ngrok, not a letsencrypt.sh bug, tests can't continue."
   exit 1
 fi
@@ -97,10 +96,10 @@ mkdir -p .acme-challenges/.well-known/acme-challenge
 ) &
 
 # Generate config and create empty domains.txt
-echo 'CA="https://testca.kurz.pw/directory"' > config.sh
-echo 'LICENSE="https://testca.kurz.pw/terms/v1"' >> config.sh
-echo 'WELLKNOWN=".acme-challenges/.well-known/acme-challenge"' >> config.sh
-echo 'RENEW_DAYS="14"' >> config.sh
+echo 'CA="https://testca.kurz.pw/directory"' > config
+echo 'LICENSE="https://testca.kurz.pw/terms/v1"' >> config
+echo 'WELLKNOWN=".acme-challenges/.well-known/acme-challenge"' >> config
+echo 'RENEW_DAYS="14"' >> config
 touch domains.txt
 
 # Check if help command is working
@@ -115,13 +114,13 @@ _CHECK_ERRORLOG
 _TEST "First run in cron mode, checking if private key is generated and registered"
 ./letsencrypt.sh --cron > tmplog 2> errorlog || _FAIL "Script execution failed"
 _CHECK_LOG "Registering account key"
-_CHECK_FILE "private_key.pem"
+_CHECK_FILE accounts/*/account_key.pem
 _CHECK_ERRORLOG
 
 # Temporarily move config out of the way and try signing certificate by using temporary config location
 _TEST "Try signing using temporary config location and with domain as command line parameter"
-mv config.sh tmp_config.sh
-./letsencrypt.sh --cron --domain "${TMP_URL}" --domain "${TMP2_URL}" -f tmp_config.sh > tmplog 2> errorlog || _FAIL "Script execution failed"
+mv config tmp_config
+./letsencrypt.sh --cron --domain "${TMP_URL}" --domain "${TMP2_URL}" -f tmp_config > tmplog 2> errorlog || _FAIL "Script execution failed"
 _CHECK_NOT_LOG "Checking domain name(s) of existing cert"
 _CHECK_LOG "Generating private key"
 _CHECK_LOG "Requesting challenge for ${TMP_URL}"
@@ -130,19 +129,35 @@ _CHECK_LOG "Challenge is valid!"
 _CHECK_LOG "Creating fullchain.pem"
 _CHECK_LOG "Done!"
 _CHECK_ERRORLOG
-mv tmp_config.sh config.sh
+mv tmp_config config
 
-# Move private key and add new location to config
-mv private_key.pem account_key.pem
-echo 'PRIVATE_KEY="./account_key.pem"' >> config.sh
+# Add third domain to command-lime, should force renewal.
+_TEST "Run in cron mode again, this time adding third domain, should force renewal."
+./letsencrypt.sh --cron --domain "${TMP_URL}" --domain "${TMP2_URL}" --domain "${TMP3_URL}" > tmplog 2> errorlog || _FAIL "Script execution failed"
+_CHECK_LOG "Domain name(s) are not matching!"
+_CHECK_LOG "Forcing renew."
+_CHECK_LOG "Generating private key"
+_CHECK_LOG "Requesting challenge for ${TMP_URL}"
+_CHECK_LOG "Requesting challenge for ${TMP2_URL}"
+_CHECK_LOG "Requesting challenge for ${TMP3_URL}"
+_CHECK_LOG "Challenge is valid!"
+_CHECK_LOG "Creating fullchain.pem"
+_CHECK_LOG "Done!"
+_CHECK_ERRORLOG
 
-# Add domain to domains.txt and run in cron mode again (should find a non-expiring certificate and do nothing)
+# Prepare domains.txt
+# Modify TMP3_URL to be uppercase to check for upper-lower-case mismatch bugs
+echo "${TMP_URL} ${TMP2_URL} $(tr 'a-z' 'A-Z' <<<"${TMP3_URL}")" >> domains.txt
+
+# Run in cron mode again (should find a non-expiring certificate and do nothing)
 _TEST "Run in cron mode again, this time with domain in domains.txt, should find non-expiring certificate"
-echo "${TMP_URL} ${TMP2_URL}" >> domains.txt
 ./letsencrypt.sh --cron > tmplog 2> errorlog || _FAIL "Script execution failed"
 _CHECK_LOG "Checking domain name(s) of existing cert... unchanged."
-_CHECK_LOG "Skipping!"
+_CHECK_LOG "Skipping renew"
 _CHECK_ERRORLOG
+
+# Disable private key renew
+echo 'PRIVATE_KEY_RENEW="no"' >> config
 
 # Run in cron mode one last time, with domain in domains.txt and force-resign (should find certificate, resign anyway, and not generate private key)
 _TEST "Run in cron mode one last time, with domain in domains.txt and force-resign"
@@ -152,17 +167,22 @@ _CHECK_LOG "Ignoring because renew was forced!"
 _CHECK_NOT_LOG "Generating private key"
 _CHECK_LOG "Requesting challenge for ${TMP_URL}"
 _CHECK_LOG "Requesting challenge for ${TMP2_URL}"
+_CHECK_LOG "Requesting challenge for ${TMP3_URL}"
 _CHECK_LOG "Challenge is valid!"
 _CHECK_LOG "Creating fullchain.pem"
 _CHECK_LOG "Done!"
 _CHECK_ERRORLOG
 
-# Delete account key (not needed anymore)
-rm account_key.pem
+# Check if signcsr command is working
+_TEST "Running signcsr command"
+./letsencrypt.sh --signcsr certs/${TMP_URL}/cert.csr > tmplog 2> errorlog || _FAIL "Script execution failed"
+_CHECK_LOG "BEGIN CERTIFICATE"
+_CHECK_LOG "END CERTIFICATE"
+_CHECK_NOT_LOG "ERROR"
 
 # Check if renewal works
 _TEST "Run in cron mode again, to check if renewal works"
-echo 'RENEW_DAYS="300"' >> config.sh
+echo 'RENEW_DAYS="300"' >> config
 ./letsencrypt.sh --cron > tmplog 2> errorlog || _FAIL "Script execution failed"
 _CHECK_LOG "Checking domain name(s) of existing cert... unchanged."
 _CHECK_LOG "Renewing!"
@@ -187,6 +207,14 @@ REAL_CERT="$(readlink -n "certs/${TMP_URL}/cert.pem")"
 _CHECK_LOG "Revoking certs/${TMP_URL}/${REAL_CERT}"
 _CHECK_LOG "Done."
 _CHECK_FILE "certs/${TMP_URL}/${REAL_CERT}-revoked"
+_CHECK_ERRORLOG
+
+# Test cleanup command
+_TEST "Cleaning up certificates"
+./letsencrypt.sh --cleanup > tmplog 2> errorlog || _FAIL "Script execution failed"
+_CHECK_LOG "Moving unused file to archive directory: ${TMP_URL}/cert-"
+_CHECK_LOG "Moving unused file to archive directory: ${TMP_URL}/chain-"
+_CHECK_LOG "Moving unused file to archive directory: ${TMP_URL}/fullchain-"
 _CHECK_ERRORLOG
 
 # All done

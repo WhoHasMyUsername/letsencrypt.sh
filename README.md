@@ -8,13 +8,22 @@ Other dependencies are: curl, sed, grep, mktemp (all found on almost any system,
 
 Current features:
 - Signing of a list of domains
+- Signing of a CSR
 - Renewal if a certificate is about to expire or SAN (subdomains) changed
 - Certificate revocation
 
-If you want to import existing keys from the official letsencrypt client have a look at [Import from official letsencrypt client](https://github.com/lukas2511/letsencrypt.sh/wiki/Import-from-official-letsencrypt-client).
-
 Please keep in mind that this software and even the acme-protocol are relatively young and may still have some unresolved issues.
 Feel free to report any issues you find with this script or contribute by submitting a pullrequest.
+
+### Getting started
+
+For getting started I recommend taking a look at [docs/domains_txt.md](docs/domains_txt.md), [docs/wellknown.md](docs/wellknown.md) and the [Usage](#usage) section on this page (you'll probably only need the `-c` option).
+
+Generally you want to set up your WELLKNOWN path first, and then fill in domains.txt.
+
+**Please note that you should use the staging URL when experimenting with this script to not hit letsencrypts rate limits.** See [docs/staging.md](docs/staging.md).
+
+If you have any problems take a look at our [Troubleshooting](docs/troubleshooting.md) guide.
 
 ## Usage:
 
@@ -25,66 +34,20 @@ Default command: help
 
 Commands:
  --cron (-c)                      Sign/renew non-existant/changed/expiring certificates.
+ --signcsr (-s) path/to/csr.pem   Sign a given CSR, output CRT on stdout (advanced usage)
  --revoke (-r) path/to/cert.pem   Revoke specified certificate
+ --cleanup (-gc)                  Move unused certificate files to archive directory
  --help (-h)                      Show help text
  --env (-e)                       Output configuration variables for use in other scripts
 
 Parameters:
  --domain (-d) domain.tld         Use specified domain name(s) instead of domains.txt entry (one certificate!)
  --force (-x)                     Force renew of certificate even if it is longer valid than value in RENEW_DAYS
+ --ocsp                           Sets option in CSR indicating OCSP stapling to be mandatory
  --privkey (-p) path/to/key.pem   Use specified private key instead of account key (useful for revocation)
- --config (-f) path/to/config.sh  Use specified config file
+ --config (-f) path/to/config     Use specified config file
  --hook (-k) path/to/hook.sh      Use specified script for hooks
+ --out (-o) certs/directory       Output certificates into the specified directory
  --challenge (-t) http-01|dns-01  Which challenge should be used? Currently http-01 and dns-01 are supported
+ --algo (-a) rsa|prime256v1|secp384r1 Which public key algorithm should be used? Supported: rsa, prime256v1 and secp384r1
 ```
-
-### domains.txt
-
-The file `domains.txt` should have the following format:
-
-```text
-example.com www.example.com
-example.net www.example.net wiki.example.net
-```
-
-This states that there should be two certificates `example.com` and `example.net`,
-with the other domains in the corresponding line being their alternative names.
-
-### $WELLKNOWN / challenge-response
-
-Boulder (acme-server) is looking for challenge responses under your domain in the `.well-known/acme-challenge` directory
-
-This script uses `http-01`-type verification (for now) so you need to have that directory available over normal http (no ssl).
-
-A full URL would look like `http://example.org/.well-known/acme-challenge/c3VjaC1jaGFsbGVuZ2UtbXVjaA-aW52YWxpZC13b3c`.
-
-An example setup to get this to work would be:
-
-nginx.conf:
-```
-...
-location /.well-known/acme-challenge {
-  alias /var/www/letsencrypt;
-}
-...
-```
-
-config.sh:
-```bash
-...
-WELLKNOWN="/var/www/letsencrypt"
-...
-```
-
-An alternative to setting the WELLKNOWN variable would be to create a symlink to the default location next to the script (or BASEDIR):
-`ln -s /var/www/letsencrypt .acme-challenges`
-
-### dns-01 challenge
-
-This script also supports the new `dns-01`-type verification. Be aware that at the moment this is not available on the production servers from letsencrypt. Please read https://community.letsencrypt.org/t/dns-challenge-is-in-staging/8322 for the current state of `dns-01` support.
-
-You need a hook script that deploys the challenge to your DNS server!
-
-### Elliptic Curve Cryptography (ECC)
-
-This script also supports certificates with Elliptic Curve public keys! Be aware that at the moment this is not available on the production servers from letsencrypt. Please read https://community.letsencrypt.org/t/ecdsa-testing-on-staging/8809/ for the current state of ECC support.
