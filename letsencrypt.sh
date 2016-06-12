@@ -131,7 +131,7 @@ load_config() {
     echo "# !! WARNING !! No main config file found, using default config!" >&2
     echo "#" >&2
   elif [[ -f "${CONFIG}" ]]; then
-    echo "# INFO: Using main config file ${CONFIG}"
+    _msg $INFO "Using main config file ${CONFIG}"
     BASEDIR="$(dirname "${CONFIG}")"
     # shellcheck disable=SC1090
     . "${CONFIG}"
