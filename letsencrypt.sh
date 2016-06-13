@@ -127,9 +127,7 @@ load_config() {
   OCSP_MUST_STAPLE="no"
 
   if [[ -z "${CONFIG:-}" ]]; then
-    echo "#" >&2
-    echo "# !! WARNING !! No main config file found, using default config!" >&2
-    echo "#" >&2
+    _msg $WARN "# !! WARNING !! No main config file found, using default config!"
   elif [[ -f "${CONFIG}" ]]; then
     _msg $INFO "Using main config file ${CONFIG}"
     BASEDIR="$(dirname "${CONFIG}")"
@@ -146,10 +144,10 @@ load_config() {
 
     for check_config_d in "${CONFIG_D}"/*.sh; do
       if [[ ! -e "${check_config_d}" ]]; then
-        echo "# !! WARNING !! Extra configuration directory ${CONFIG_D} exists, but no configuration found in it." >&2
+        _msg $WARN "# !! WARNING !! Extra configuration directory ${CONFIG_D} exists, but no configuration found in it." >&2
         break
       elif [[ -f "${check_config_d}" ]] && [[ -r "${check_config_d}" ]]; then
-        echo "# INFO: Using additional config file ${check_config_d}"
+        _msg $INFO  "Using additional config file ${check_config_d}"
         # shellcheck disable=SC1090
         . "${check_config_d}"
       else
@@ -172,11 +170,11 @@ load_config() {
   ACCOUNT_KEY_JSON="${ACCOUNTDIR}/${CAHASH}/registration_info.json"
 
   if [[ -f "${BASEDIR}/private_key.pem" ]] && [[ ! -f "${ACCOUNT_KEY}" ]]; then
-    echo "! Moving private_key.pem to ${ACCOUNT_KEY}"
+    _msg $INFO "! Moving private_key.pem to ${ACCOUNT_KEY}"
     mv "${BASEDIR}/private_key.pem" "${ACCOUNT_KEY}"
   fi
   if [[ -f "${BASEDIR}/private_key.json" ]] && [[ ! -f "${ACCOUNT_KEY_JSON}" ]]; then
-    echo "! Moving private_key.json to ${ACCOUNT_KEY_JSON}"
+    _msg $INFO "! Moving private_key.json to ${ACCOUNT_KEY_JSON}"
     mv "${BASEDIR}/private_key.json" "${ACCOUNT_KEY_JSON}"
   fi
 
@@ -222,13 +220,13 @@ init_system() {
   register_new_key="no"
   if [[ -n "${PARAM_ACCOUNT_KEY:-}" ]]; then
     # a private key was specified from the command line so use it for this run
-    echo "Using private key ${PARAM_ACCOUNT_KEY} instead of account key"
+    _msg $INFO "Using private key ${PARAM_ACCOUNT_KEY} instead of account key"
     ACCOUNT_KEY="${PARAM_ACCOUNT_KEY}"
     ACCOUNT_KEY_JSON="${PARAM_ACCOUNT_KEY}.json"
   else
     # Check if private account key exists, if it doesn't exist yet generate a new one (rsa key)
     if [[ ! -e "${ACCOUNT_KEY}" ]]; then
-      echo "+ Generating account key..."
+      _msg $INFO "+ Generating account key..."
       _openssl genrsa -out "${ACCOUNT_KEY}" "${KEYSIZE}"
       register_new_key="yes"
     fi
@@ -253,9 +251,7 @@ init_system() {
       (signed_request "${CA_NEW_REG}" '{"resource": "new-reg", "agreement": "'"$LICENSE"'"}' > "${ACCOUNT_KEY_JSON}") || FAILED=true
     fi
     if [[ "${FAILED}" = "true" ]]; then
-      echo
-      echo
-      echo "Error registering account key. See message above for more information."
+      _msg $EROR "Error registering account key. See message above for more information."
       rm "${ACCOUNT_KEY}" "${ACCOUNT_KEY_JSON}"
       exit 1
     fi
@@ -326,11 +322,9 @@ _openssl() {
   res=$?
   set -e
   if [[ ${res} -ne 0 ]]; then
-    echo "  + ERROR: failed to run $* (Exitcode: ${res})" >&2
-    echo >&2
-    echo "Details:" >&2
-    echo "${out}" >&2
-    echo >&2
+    _msg $EROR "  + ERROR: failed to run $* (Exitcode: ${res})" 
+    _msg $EROR "Details:"
+    _msg $EROR "${out}"
     exit ${res}
   fi
 }
@@ -360,10 +354,9 @@ http_request() {
   fi
 
   if [[ ! "${statuscode:0:1}" = "2" ]]; then
-    echo "  + ERROR: An error occurred while sending ${1}-request to ${2} (Status ${statuscode})" >&2
-    echo >&2
-    echo "Details:" >&2
-    cat "${tempcont}" >&2
+    _msg $EROR "  + ERROR: An error occurred while sending ${1}-request to ${2} (Status ${statuscode})"
+    _msg $EROR "Details:"
+    _msg $EROR `cat ${tempcont}`
     rm -f "${tempcont}"
 
     # Wait for hook script to clean the challenge if used
@@ -426,12 +419,12 @@ extract_altnames() {
     fi
     # strip away the DNS: prefix
     altnames="$( <<<"${altnames}" _sed -e 's/^DNS://' )"
-    echo "${altnames}"
+    _msg $INFO "${altnames}"
 
   else
     # No SANs, extract CN
     altnames="$( <<<"${reqtext}" grep '^[[:space:]]*Subject:' | _sed -e 's/.* CN=([^ /,]*).*/\1/' )"
-    echo "${altnames}"
+    _msg $INFO "${altnames}"
   fi
 }
 
@@ -465,7 +458,7 @@ sign_csr() {
   # Request challenges
   for altname in ${altnames}; do
     # Ask the acme-server for new challenge token and extract them from the resulting json block
-    echo " + Requesting challenge for ${altname}..."
+    _msg $WARN " + Requesting challenge for ${altname}..."
     response="$(signed_request "${CA_NEW_AUTHZ}" '{"resource": "new-authz", "identifier": {"type": "dns", "value": "'"${altname}"'"}}' | clean_json)"
 
     challenges="$(printf '%s\n' "${response}" | sed -n 's/.*\("challenges":[^\[]*\[[^]]*]\).*/\1/p')"
@@ -517,7 +510,7 @@ sign_csr() {
     [[ -n "${HOOK}" ]] && [[ "${HOOK_CHAIN}" != "yes" ]] && "${HOOK}" "deploy_challenge" ${deploy_args[${idx}]}
 
     # Ask the acme-server to verify our challenge and wait until it is no longer pending
-    echo " + Responding to challenge for ${altname}..."
+    _msg $WARN " + Responding to challenge for ${altname}..."
     result="$(signed_request "${challenge_uris[${idx}]}" '{"resource": "challenge", "keyAuthorization": "'"${keyauth}"'"}' | clean_json)"
 
     reqstatus="$(printf '%s\n' "${result}" | get_json_string_value status)"
@@ -538,7 +531,7 @@ sign_csr() {
     idx=$((idx+1))
 
     if [[ "${reqstatus}" = "valid" ]]; then
-      echo " + Challenge is valid!"
+      _msg $WARN " + Challenge is valid!"
     else
       break
     fi
@@ -561,19 +554,19 @@ sign_csr() {
   fi
 
   # Finally request certificate from the acme-server and store it in cert-${timestamp}.pem and link from cert.pem
-  echo " + Requesting certificate..."
+  _msg $WARN " + Requesting certificate..."
   csr64="$( <<<"${csr}" openssl req -outform DER | urlbase64)"
   crt64="$(signed_request "${CA_NEW_CERT}" '{"resource": "new-cert", "csr": "'"${csr64}"'"}' | openssl base64 -e)"
   crt="$( printf -- '-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' "${crt64}" )"
 
   # Try to load the certificate to detect corruption
-  echo " + Checking certificate..."
+  _msg $WARN " + Checking certificate..."
   _openssl x509 -text <<<"${crt}"
 
   echo "${crt}" >&3
 
   unset challenge_token
-  echo " + Done!"
+  _msg $WARN " + Done!"
 }
 
 # Create certificate for domain(s)
@@ -582,21 +575,21 @@ sign_domain() {
   altnames="${*}"
   timestamp="$(date +%s)"
 
-  echo " + Signing domains..."
+  _msg $WARN " + Signing domains..."
   if [[ -z "${CA_NEW_AUTHZ}" ]] || [[ -z "${CA_NEW_CERT}" ]]; then
     _exiterr "Certificate authority doesn't allow certificate signing"
   fi
 
   # If there is no existing certificate directory => make it
   if [[ ! -e "${CERTDIR}/${domain}" ]]; then
-    echo " + Creating new directory ${CERTDIR}/${domain} ..."
+    _msg $WARN " + Creating new directory ${CERTDIR}/${domain} ..."
     mkdir -p "${CERTDIR}/${domain}" || _exiterr "Unable to create directory ${CERTDIR}/${domain}"
   fi
 
   privkey="privkey.pem"
   # generate a new private key if we need or want one
   if [[ ! -r "${CERTDIR}/${domain}/privkey.pem" ]] || [[ "${PRIVATE_KEY_RENEW}" = "yes" ]]; then
-    echo " + Generating private key..."
+    _msg $WARN " + Generating private key..."
     privkey="privkey-${timestamp}.pem"
     case "${KEY_ALGO}" in
       rsa) _openssl genrsa -out "${CERTDIR}/${domain}/privkey-${timestamp}.pem" "${KEYSIZE}";;
@@ -605,7 +598,7 @@ sign_domain() {
   fi
 
   # Generate signing request config and the actual signing request
-  echo " + Generating signing request..."
+  _msg $WARN " + Generating signing request..."
   SAN=""
   for altname in ${altnames}; do
     SAN+="DNS:${altname}, "
@@ -626,7 +619,7 @@ sign_domain() {
   sign_csr "$(< "${CERTDIR}/${domain}/cert-${timestamp}.csr" )" ${altnames} 3>"${crt_path}"
 
   # Create fullchain.pem
-  echo " + Creating fullchain.pem..."
+  _msg $WARN " + Creating fullchain.pem..."
   cat "${crt_path}" > "${CERTDIR}/${domain}/fullchain-${timestamp}.pem"
   http_request get "$(openssl x509 -in "${CERTDIR}/${domain}/cert-${timestamp}.pem" -noout -text | grep 'CA Issuers - URI:' | cut -d':' -f2-)" > "${CERTDIR}/${domain}/chain-${timestamp}.pem"
   if ! grep -q "BEGIN CERTIFICATE" "${CERTDIR}/${domain}/chain-${timestamp}.pem"; then
@@ -689,7 +682,7 @@ command_sign_domains() {
     # we could just source the config file but i decided to go this way to protect people from accidentally overriding
     # variables used internally by this script itself.
     if [ -f "${CERTDIR}/${domain}/config" ]; then
-      echo " + Using certificate specific config file!"
+      _MSG $INFO " + Using certificate specific config file!"
       ORIGIFS="${IFS}"
       IFS=$'\n'
       for cfgline in $(
@@ -707,11 +700,11 @@ command_sign_domains() {
         config_value="$(echo "${cfgline:1}" | cut -d'=' -f2-)"
         case "${config_var}" in
           KEY_ALGO|OCSP_MUST_STAPLE|PRIVATE_KEY_RENEW|KEYSIZE|CHALLENGETYPE|HOOK|WELLKNOWN|HOOK_CHAIN|OPENSSL_CNF|RENEW_DAYS)
-            echo "   + ${config_var} = ${config_value}"
+            _msg $INFO "   + ${config_var} = ${config_value}"
             declare -- "${config_var}=${config_value}"
             ;;
           _) ;;
-          *) echo "   ! Setting ${config_var} on a per-certificate base is not (yet) supported"
+          *) _msg $WARN "   ! Setting ${config_var} on a per-certificate base is not (yet) supported"
         esac
       done
       IFS="${ORIGIFS}"
@@ -749,7 +742,7 @@ command_sign_domains() {
           _msg $WARN "+ Ignoring because renew was forced!"
         else
           # Certificate-Names unchanged and cert is still valid
-          echo "Skipping renew!"
+          _msg $INFO "Skipping renew!"
           [[ -n "${HOOK}" ]] && "${HOOK}" "unchanged_cert" "${domain}" "${CERTDIR}/${domain}/privkey.pem" "${CERTDIR}/${domain}/cert.pem" "${CERTDIR}/${domain}/fullchain.pem" "${CERTDIR}/${domain}/chain.pem"
           continue
         fi
@@ -828,14 +821,14 @@ command_revoke() {
   fi
   [[ -f "${cert}" ]] || _exiterr "Could not find certificate ${cert}"
 
-  _msg $INFO "Revoking ${cert}"
+  _msg $WARN "Revoking ${cert}"
 
   cert64="$(openssl x509 -in "${cert}" -inform PEM -outform DER | urlbase64)"
   response="$(signed_request "${CA_REVOKE_CERT}" '{"resource": "revoke-cert", "certificate": "'"${cert64}"'"}' | clean_json)"
   # if there is a problem with our revoke request _request (via signed_request) will report this and "exit 1" out
   # so if we are here, it is safe to assume the request was successful
-  _msg $INFO " + Done."
-  _msg $INFO " + Renaming certificate to ${cert}-revoked"
+  _msg $WARN " + Done."
+  _msg $WARN " + Renaming certificate to ${cert}-revoked"
   mv -f "${cert}" "${cert}-revoked"
 }
 
@@ -883,7 +876,7 @@ command_cleanup() {
         # Check if current file is in use, if unused move to archive directory
         filename="$(basename "${file}")"
         if [[ ! "${filename}" = "${current}" ]]; then
-          echo "Moving unused file to archive directory: ${certname}/${filename}"
+          _msg $INFO "Moving unused file to archive directory: ${certname}/${filename}"
           mv "${certdir}/${filename}" "${archivedir}/${filename}"
         fi
       done
@@ -917,7 +910,7 @@ command_help() {
 # Usage: --env (-e)
 # Description: Output configuration variables for use in other scripts
 command_env() {
-  echo "# letsencrypt.sh configuration"
+  _msg $INFO "# letsencrypt.sh configuration"
   load_config
   typeset -p CA LICENSE CERTDIR CHALLENGETYPE DOMAINS_TXT HOOK HOOK_CHAIN RENEW_DAYS ACCOUNT_KEY ACCOUNT_KEY_JSON KEYSIZE WELLKNOWN PRIVATE_KEY_RENEW OPENSSL_CNF CONTACT_EMAIL LOCKFILE
 }
